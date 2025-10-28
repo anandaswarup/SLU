@@ -26,16 +26,11 @@ dependencies = [
     "yamllint==1.35.1",
 ]
 
-[tool.uv.workspace]
-members = [
-    "external/speechbrain",
-]
-
-[tool.uv.sources]
-speechbrain = { workspace = true, editable = true }
-
 [dependency-groups]
 dev = [
     "ipython>=9.6.0",
     "ruff>=0.12.4",
 ]
+
+[tool.uv.sources]
+speechbrain = { git = "https://github.com/speechbrain/speechbrain.git" }

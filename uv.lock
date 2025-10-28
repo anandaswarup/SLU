@@ -2,12 +2,6 @@ version = 1
 revision = 3
 requires-python = ">=3.12"
 
-[manifest]
-members = [
-    "slu",
-    "speechbrain",
-]
-
 [[package]]
 name = "asttokens"
 version = "3.0.0"
@@ -1231,7 +1225,7 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.4.1" },
     { name = "sentencepiece", specifier = ">=0.1.91" },
     { name = "soundfile", marker = "sys_platform == 'win32'", specifier = ">=0.13.1" },
-    { name = "speechbrain", editable = "external/speechbrain" },
+    { name = "speechbrain", git = "https://github.com/speechbrain/speechbrain.git" },
     { name = "torch", specifier = ">=2.1.0,<2.9" },
     { name = "torchaudio", specifier = ">=2.1.0,<2.9" },
     { name = "tqdm", specifier = ">=4.42.0" },
@@ -1262,7 +1256,8 @@ wheels = [
 
 [[package]]
 name = "speechbrain"
-source = { editable = "external/speechbrain" }
+version = "1.0.3"
+source = { git = "https://github.com/speechbrain/speechbrain.git#279a09a11e5000f90618327c1f4320bb37a5853d" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "hyperpyyaml" },
@@ -1275,39 +1270,6 @@ dependencies = [
     { name = "torchaudio" },
     { name = "tqdm" },
 ]
-
-[package.optional-dependencies]
-dev = [
-    { name = "codespell" },
-    { name = "pandas" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "ruff" },
-    { name = "transformers" },
-    { name = "yamllint" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "codespell", marker = "extra == 'dev'", specifier = ">=2.3.0" },
-    { name = "huggingface-hub", specifier = ">=0.8.0" },
-    { name = "hyperpyyaml", specifier = ">=0.0.1" },
-    { name = "joblib", specifier = ">=0.14.1" },
-    { name = "numpy", specifier = ">=1.17.0" },
-    { name = "packaging" },
-    { name = "pandas", marker = "extra == 'dev'", specifier = ">=1.0.1" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=2.3.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = "==7.4.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.12.4" },
-    { name = "scipy", specifier = ">=1.4.1" },
-    { name = "sentencepiece", specifier = ">=0.1.91" },
-    { name = "torch", specifier = ">=2.1.0,<2.9" },
-    { name = "torchaudio", specifier = ">=2.1.0,<2.9" },
-    { name = "tqdm", specifier = ">=4.42.0" },
-    { name = "transformers", marker = "extra == 'dev'", specifier = ">=4.30.0" },
-    { name = "yamllint", marker = "extra == 'dev'", specifier = "==1.35.1" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "stack-data"

@@ -6,6 +6,10 @@ Transform JSONL in the following format:
 into CSV with following columns:
 
 path, transcription, action, slot_name, slot_value
+
+The CSV format is the same as the one used in the Fluent Speech Commands dataset with the following changes:
+ - "object" from FSC is renamed to "slot_name"
+ - "location" from FSC is renamed to "slot_value"
 """
 
 import argparse
