@@ -1,0 +1,98 @@
+"""
+Dataset preparation script.
+"""
+
+import os
+
+import pandas as pd
+from speechbrain.dataio.dataio import read_audio
+from speechbrain.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+def prepare_dataset(data_folder, save_folder, skip_prep=False):
+    """
+    This function prepares the dataset by creating manifest files for train, valid, and test splits.
+
+    Args:
+        data_folder : path to data folder containing the `train.csv`, `valid.csv`, and `test.csv` files.
+        save_folder: folder where the manifest files will be stored.
+        skip_prep: If True, skip data preparation.
+    """
+    if skip_prep:
+        return
+
+    splits = [
+        "train",
+        "dev",
+        "test",
+    ]
+
+    # Counter for unique IDs for each audio
+    ID_start = 0
+
+    # Create save folder if it doesn't exist
+    os.makedirs(save_folder, exist_ok=True)
+
+    # Iterate over each data split
+    for split in splits:
+        new_filename = os.path.join(save_folder, split) + ".csv"
+        if os.path.exists(new_filename):
+            continue
+        logger.info("Preparing %s..." % new_filename)
+
+        ID = []
+        duration = []
+
+        wav = []
+        wav_format = []
+        wav_opts = []
+
+        semantics = []
+        semantics_format = []
+        semantics_opts = []
+
+        transcript = []
+        transcript_format = []
+        transcript_opts = []
+
+        df = pd.read_csv(os.path.join(data_folder, split) + ".csv")
+        for i in range(len(df)):
+            ID.append(ID_start + i)
+            signal = read_audio(os.path.join(data_folder, df.path[i]))
+            duration.append(signal.shape[0] / 16000)
+
+            wav.append(df.path[i])
+            wav_format.append("wav")
+            wav_opts.append(None)
+
+            transcript_ = df.transcription[i]
+            transcript.append(transcript_)
+            transcript_format.append("string")
+            transcript_opts.append(None)
+
+            semantics_ = (
+                '{"action:" "'
+                + df.action[i]
+                + '"| "slot_name": "'
+                + df.slot_name[i]
+                + '"| "slot_value": "'
+                + df.slot_value[i]
+                + '"}'
+            )
+            semantics.append(semantics_)
+            semantics_format.append("string")
+            semantics_opts.append(None)
+
+        new_df = pd.DataFrame(
+            {
+                "ID": ID,
+                # "duration": duration,
+                "wav": wav,
+                "semantics": semantics,
+                "transcript": transcript,
+            }
+        )
+        new_df.to_csv(new_filename, index=False)
+        ID_start += len(df)
