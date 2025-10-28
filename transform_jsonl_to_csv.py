@@ -1,15 +1,13 @@
 """
-Transform JSONL in the following format:
-
-{"audio_filepath": ".../594/128329/594-128329-0025.wav", "transcript": "...", "annotations": {"action":"none","object":"none","location":"none"}}
+Transform jsonl in the following format:
+{"audio_filepath": "...", "transcript": "...", "annotations": {"action":"...","object":"...","location":"..."}}
 
 into CSV with following columns:
-
-path, transcription, action, slot_name, slot_value
+path, transcription, action, slot_name, slot_value.
 
 The CSV format is the same as the one used in the Fluent Speech Commands dataset with the following changes:
- - "object" from FSC is renamed to "slot_name"
- - "location" from FSC is renamed to "slot_value"
+ (1) "object" from FSC is renamed to "slot_name"
+ (2) "location" from FSC is renamed to "slot_value"
 """
 
 import argparse
