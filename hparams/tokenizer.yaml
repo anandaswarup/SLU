@@ -18,7 +18,7 @@ skip_prep: False
 
 # Training parameters
 token_type: unigram  # ["unigram", "bpe", "char"]
-token_output: 51  # index(blank/eos/bos/unk) = 0
+token_output: 81  # index(blank/eos/bos/unk) = 0
 character_coverage: 1.0
 num_sequences: null
 csv_read: semantics
