@@ -72,15 +72,7 @@ def prepare_dataset(data_folder, save_folder, skip_prep=False):
             transcript_format.append("string")
             transcript_opts.append(None)
 
-            semantics_ = (
-                '{"action:" "'
-                + df.action[i]
-                + '"| "slot_name": "'
-                + df.slot_name[i]
-                + '"| "slot_value": "'
-                + df.slot_value[i]
-                + '"}'
-            )
+            semantics_ = f"{{action: {df.action[i]} | slot_name: {df.slot_name[i]} | slot_value: {df.slot_value[i]}}}"
             semantics.append(semantics_)
             semantics_format.append("string")
             semantics_opts.append(None)
@@ -88,7 +80,7 @@ def prepare_dataset(data_folder, save_folder, skip_prep=False):
         new_df = pd.DataFrame(
             {
                 "ID": ID,
-                # "duration": duration,
+                "duration": duration,
                 "wav": wav,
                 "semantics": semantics,
                 "transcript": transcript,
