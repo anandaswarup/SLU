@@ -2,7 +2,7 @@
 ##################### Tokenizer configuration file  ##########################
 ##############################################################################
 
-output_folder: !ref results/tokenizer_bpe51/
+output_folder: !ref ../model/tokenizer/
 train_log: !ref <output_folder>/train_log.txt
 
 # Dataset folder
