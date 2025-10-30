@@ -128,7 +128,11 @@ wav_augment: !new:speechbrain.augment.augmenter.Augmenter
     min_augmentations: 1
     max_augmentations: 4
     augment_prob: 1.0
-    augmentations: null
+    augmentations: [
+        !ref <add_noise>,
+        !ref <add_reverb>,
+        !ref <drop_freq>,
+        !ref <drop_chunk>]
 
 ############################## Models ##########################################
 
