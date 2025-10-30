@@ -260,7 +260,7 @@ if __name__ == "__main__":
     hparams["pretrainer"].load_collected()
 
     hparams["asr_model"] = EncoderDecoderASR.from_hparams(
-        source=hparams["asr_model_source"],
+        source=hparams["asr_model_path"],
         run_opts={"device": run_opts["device"]},
     )
 
@@ -274,7 +274,7 @@ if __name__ == "__main__":
     )
 
     # adding objects to trainer:
-    slu_brain.tokenizer = tokenizer # type: ignore
+    slu_brain.tokenizer = tokenizer  # type: ignore
 
     # Training
     slu_brain.fit(
