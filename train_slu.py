@@ -79,7 +79,11 @@ class SLU(sb.Brain):
         # (No ctc loss)
         loss = loss_seq
 
-        if (stage != sb.Stage.TRAIN) or (self.step % show_results_every == 0):
+        if (
+            (stage != sb.Stage.TRAIN)
+            or (self.step % show_results_every == 0)
+            and predicted_tokens is not None
+        ):
             # Decode token terms to words
             predicted_semantics = [
                 tokenizer.decode_ids(utt_seq).split(" ") for utt_seq in predicted_tokens
