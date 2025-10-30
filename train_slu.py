@@ -33,7 +33,14 @@ class SLU(sb.Brain):
 
         # Add waveform augmentation if specified.
         if stage == sb.Stage.TRAIN and hasattr(self.hparams, "wav_augment"):
-            wavs, wav_lens = self.hparams.wav_augment(wavs, wav_lens)
+            orig_device = wavs.device
+            wavs_cpu = wavs.to("cpu")
+            wav_lens_cpu = wav_lens.to("cpu")
+            with torch.no_grad():
+                aug_wavs_cpu = self.hparams.wav_augment(wavs_cpu, wav_lens_cpu)
+            wavs = aug_wavs_cpu.to(orig_device)
+            wav_lens = wav_lens_cpu.to(orig_device)
+            # wavs, wav_lens = self.hparams.wav_augment(wavs, wav_lens)
             tokens_bos = self.hparams.wav_augment.replicate_labels(tokens_bos)
             tokens_bos_lens = self.hparams.wav_augment.replicate_labels(tokens_bos_lens)
 
