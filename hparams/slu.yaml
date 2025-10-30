@@ -36,6 +36,9 @@ rir_annotation: !ref <manifest_folder>/rir.csv
 # Path to the tokenizer model file
 tokenizer_file: !PLACEHOLDER
 
+# Path to the pretrained ASR model
+asr_model_path: !PLACEHOLDER
+
 # Whether to skip data preparation or not
 skip_prep: False
 
@@ -132,8 +135,6 @@ wav_augment: !new:speechbrain.augment.augmenter.Augmenter
         !ref <drop_chunk>]
 
 ############################## Models ##########################################
-
-asr_model_source: speechbrain/asr-crdnn-rnnlm-librispeech
 
 slu_enc: !new:speechbrain.nnet.containers.Sequential
     input_shape: [null, null, !ref <ASR_encoder_dim>]
