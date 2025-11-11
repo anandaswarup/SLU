@@ -10,3 +10,9 @@ dependencies = [
     "torchcodec>=0.8.1",
     "transformers[audio]>=4.57.1",
 ]
+
+[dependency-groups]
+dev = [
+    "ipython>=9.7.0",
+    "ruff>=0.14.4",
+]
