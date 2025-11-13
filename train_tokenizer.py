@@ -25,22 +25,14 @@ if __name__ == "__main__":
     # create ddp_group with the right communication protocol
     ddp_init_group(run_opts)
 
-    model_dir = Path(hparams["output_folder"])
-    log_dir = Path(
-        hparams.get("log_folder", model_dir.parent / "logs" / model_dir.name)
-    )
-
-    model_dir.mkdir(parents=True, exist_ok=True)
-    log_dir.mkdir(parents=True, exist_ok=True)
-
     # Create experiment directory for logging artifacts
     sb.create_experiment_directory(
-        experiment_directory=str(log_dir),
+        experiment_directory=hparams["output_folder"],
         hyperparams_to_save=None,
         overrides=overrides,
     )
 
-    script_copy = log_dir / Path(sys.argv[0]).name
+    script_copy = Path(hparams["output_folder"]) / Path(sys.argv[0]).name
     if script_copy.exists():
         script_copy.unlink()
 
