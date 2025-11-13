@@ -7,6 +7,7 @@ Usage: python train.py hparams/slu.yaml
 """
 
 import sys
+from pathlib import Path
 
 import speechbrain as sb
 import torch
@@ -251,12 +252,16 @@ if __name__ == "__main__":
     # create ddp_group with the right communication protocol
     ddp_init_group(run_opts)
 
-    # Create experiment directory
+    # Create experiment directory for logging artifacts
     sb.create_experiment_directory(
         experiment_directory=hparams["output_folder"],
-        hyperparams_to_save=hparams_file,
+        hyperparams_to_save=None,
         overrides=overrides,
     )
+
+    script_copy = Path(hparams["output_folder"]) / Path(sys.argv[0]).name
+    if script_copy.exists():
+        script_copy.unlink()
 
     # multi-gpu (ddp) save data preparation
     run_on_main(
