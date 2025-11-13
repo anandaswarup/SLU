@@ -29,7 +29,7 @@ augment_folder: ../data/augmentations
 data_folder_noise: !ref <augment_folder>/noise # The noisy sequences for data augmentation will automatically be downloaded here.
 data_folder_rir: !ref <augment_folder>/rir # The impulse responses used for data augmentation will automatically be downloaded here.
 csv_train: !ref <manifest_folder>/train.csv
-csv_valid: !ref <manifest_folder>/valid.csv
+csv_dev: !ref <manifest_folder>/dev.csv
 csv_test: !ref <manifest_folder>/test.csv
 noise_annotation: !ref <manifest_folder>/noise.csv
 rir_annotation: !ref <manifest_folder>/rir.csv
