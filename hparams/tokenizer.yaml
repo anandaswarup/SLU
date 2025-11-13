@@ -4,8 +4,7 @@
 
 ####################### Data files ####################################
 output_folder: ../models/tokenizer
-log_folder: ../logs/tokenizer
-train_log: !ref <log_folder>/train_log.txt
+train_log: !ref <output_folder>/train_log.txt
 
 # Data files
 data_folder: ../data/jsonl
