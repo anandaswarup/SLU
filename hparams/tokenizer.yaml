@@ -3,12 +3,12 @@
 #############################################################################
 
 ####################### Data files ####################################
-output_folder: ../models/tokenizer
+output_folder: ../models/V3_Final/tokenizer
 train_log: !ref <output_folder>/train_log.txt
 
 # Data files
-data_folder: ../data/jsonl
-manifest_folder: ../data/manifests
+data_folder: ../data/V3_Final/jsonl
+manifest_folder: ../data/V3_Final/manifests
 train_csv: !ref <manifest_folder>/train.csv
 dev_csv: !ref <manifest_folder>/dev.csv
 skip_prep: False
