@@ -13,7 +13,7 @@ seed: 1234
 __set_seed: !apply:speechbrain.utils.seed_everything [!ref <seed>]
 
 ####################### Data and Output Paths ##################################
-output_folder: ../models/slu/
+output_folder: ../models/V3_Final/slu/
 save_folder: !ref <output_folder>/checkpoints
 train_log: !ref <output_folder>/train_log.txt
 test_wer_file: !ref <output_folder>/wer_test.txt
@@ -23,9 +23,9 @@ NOISE_DATASET_URL: https://www.dropbox.com/scl/fi/a09pj97s5ifan81dqhi4n/noises.z
 RIR_DATASET_URL: https://www.dropbox.com/scl/fi/linhy77c36mu10965a836/RIRs.zip?rlkey=pg9cu8vrpn2u173vhiqyu743u&dl=1
 
 # Data files
-data_folder: ../data/jsonl
-manifest_folder: ../data/manifests
-augment_folder: ../data/augmentations
+data_folder: ../data/V3_Final/jsonl
+manifest_folder: ../data/V3_Final/manifests
+augment_folder: ../data/V3_Final/augmentations
 data_folder_noise: !ref <augment_folder>/noise # The noisy sequences for data augmentation will automatically be downloaded here.
 data_folder_rir: !ref <augment_folder>/rir # The impulse responses used for data augmentation will automatically be downloaded here.
 csv_train: !ref <manifest_folder>/train.csv
@@ -35,10 +35,10 @@ noise_annotation: !ref <manifest_folder>/noise.csv
 rir_annotation: !ref <manifest_folder>/rir.csv
 
 # Path to the tokenizer model file
-tokenizer_file: ../models/tokenizer/170_unigram.model
+tokenizer_file: ../models/V3_Final/tokenizer/170_unigram.model
 
 # Path to the pretrained ASR model
-asr_model_path: ../models/asr-crdnn-rnnlm-librispeech
+asr_model_path: ../models/V3_Final/asr-crdnn-rnnlm-librispeech
 
 # Whether to skip data preparation or not
 skip_prep: False
