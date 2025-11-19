@@ -2,7 +2,7 @@
 Script for training a BPE tokenizer. The tokenizer converts semantics into sub-word units that can be used to train a
 Spoken language Understanding (SLU) model.
 
-Usage: python train.py hparams/tokenizer.yaml
+Usage: python train_tokenizer.py hparams/tokenizer.yaml
 """
 
 import sys
