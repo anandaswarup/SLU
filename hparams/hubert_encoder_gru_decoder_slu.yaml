@@ -39,7 +39,6 @@ lr: 0.0003
 lr_wav2vec2: 0.00001
 token_type: unigram # ["unigram", "bpe", "char"]
 sorting: random
-ckpt_interval_minutes: 15 # save checkpoint every N min
 
 #freeze all wav2vec2
 freeze_wav2vec2: False
