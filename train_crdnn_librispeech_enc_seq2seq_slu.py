@@ -1,12 +1,11 @@
 """
-Script for training a direct SLU model to predict semantics from speech with ASR-based transfer learning. The input
-waveforms are encoded into features using an ASR model trained on LibriSpeech, then these features are fed into a
-seq2seq model to map them to semantics.
+Script for training a pre-trained CRDNN ASR Encoder (trained on LibriSpeech) -> LSTM Encoder -> Attention GRU Decoder
+SLU model with NLL loss.
 
-Usage: python train.py hparams/slu.yaml
+Usage: python train_crdnn_librispeech_enc_seq2seq_slu.py --hparams hparams/crdnn_librispeech_enc_seq2seq_slu.yaml
 """
 
-import sys
+import argparse
 from pathlib import Path
 
 import speechbrain as sb
@@ -241,13 +240,71 @@ def dataio_prepare(hparams):
     return train_data, valid_data, test_data, tokenizer
 
 
-if __name__ == "__main__":
-    # Load hyperparameters file with command-line overrides
-    hparams_file, run_opts, overrides = sb.parse_arguments(sys.argv[1:])
-    with open(hparams_file, encoding="utf-8") as fin:
-        hparams = load_hyperpyyaml(fin, overrides)
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Train a pre-trained CRDNN ASR Encoder -> LSTM Encoder -> Attention GRU Decoder SLU model"
+    )
+    parser.add_argument(
+        "--hparams",
+        type=str,
+        required=True,
+        help="Path to the hyperparameters YAML file",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda:0",
+        help="Device to use for training (default: cuda:0)",
+    )
+    parser.add_argument(
+        "--data_parallel_backend",
+        action="store_true",
+        help="Enable data parallel backend for multi-GPU training",
+    )
+    parser.add_argument(
+        "--distributed_launch",
+        action="store_true",
+        help="Enable distributed launch for multi-node training",
+    )
+    parser.add_argument(
+        "--distributed_backend",
+        type=str,
+        default="nccl",
+        help="Backend for distributed training (default: nccl)",
+    )
+    parser.add_argument(
+        "--overrides",
+        type=str,
+        default="",
+        help="YAML overrides for hyperparameters",
+    )
+    parser.add_argument(
+        "--show_results_every",
+        type=int,
+        default=100,
+        help="Show results every N iterations (default: 100)",
+    )
+    return parser.parse_args()
 
-    show_results_every = 100  # plots results every N iterations
+
+if __name__ == "__main__":
+    # Parse command-line arguments
+    args = parse_args()
+
+    # Build run_opts dictionary for SpeechBrain
+    run_opts = {
+        "device": args.device,
+        "data_parallel_backend": args.data_parallel_backend,
+        "distributed_launch": args.distributed_launch,
+        "distributed_backend": args.distributed_backend,
+    }
+
+    # Load hyperparameters file with command-line overrides
+    with open(args.hparams, encoding="utf-8") as fin:
+        hparams = load_hyperpyyaml(fin, args.overrides)
+
+    show_results_every = args.show_results_every
 
     # create ddp_group with the right communication protocol
     ddp_init_group(run_opts)
@@ -256,10 +313,10 @@ if __name__ == "__main__":
     sb.create_experiment_directory(
         experiment_directory=hparams["output_folder"],
         hyperparams_to_save=None,
-        overrides=overrides,
+        overrides=args.overrides,
     )
 
-    script_copy = Path(hparams["output_folder"]) / Path(sys.argv[0]).name
+    script_copy = Path(hparams["output_folder"]) / Path(__file__).name
     if script_copy.exists():
         script_copy.unlink()
 
