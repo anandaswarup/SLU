@@ -34,7 +34,7 @@ skip_prep: False
 
 ####################### Training Parameters ####################################
 number_of_epochs: 35
-batch_size: 16
+batch_size: 8
 lr: 0.0003
 lr_hubert: 0.00001
 token_type: unigram # ["unigram", "bpe", "char"]
