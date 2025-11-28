@@ -1,9 +1,14 @@
 """
-Inference script for pre-trained CRDNN ASR Encoder (trained on LibriSpeech) -> LSTM Encoder -> Attention GRU Decoder
-SLU model. Decodes a single wav file and outputs the predicted semantic string.
+Inference script for Spoken Language Understanding (SLU) models.
+
+Supports multiple encoder architectures:
+- CRDNN ASR Encoder (pre-trained on LibriSpeech) -> LSTM Encoder -> Attention GRU Decoder
+- HuBERT Encoder -> Attention GRU Decoder
+
+The model architecture is determined by the hyperparameters YAML file.
 
 Usage:
-    python inference_slu.py --wav_file <path_to_wav> --hparams <Path to the hyperparameters file> --device <cpu|cuda>
+    python inference_slu.py --wav_file <path_to_wav> --hparams <path_to_hparams> --device <cpu|cuda>
 """
 
 import argparse
@@ -18,7 +23,6 @@ from hyperpyyaml import load_hyperpyyaml
 # Set environment variable and suppress warnings before importing SpeechBrain
 os.environ["PYTHONWARNINGS"] = "ignore"
 warnings.filterwarnings("ignore")
-from speechbrain.inference import EncoderDecoderASR  # noqa: E402
 
 
 def load_audio(wav_file, target_sr=16000):
@@ -39,10 +43,26 @@ def load_audio(wav_file, target_sr=16000):
     return signal.squeeze(0)
 
 
-def run_inference(hparams, wav_file, device="cpu"):
+def get_model_type(hparams):
     """
-    Run inference on a single wav file.
+    Determines the model type based on hyperparameters.
     """
+    if "asr_model_path" in hparams:
+        return "crdnn"
+    elif "hubert_hub" in hparams or "hubert" in hparams:
+        return "hubert"
+    else:
+        raise ValueError(
+            "Could not determine model type from hyperparameters. "
+            "Expected 'asr_model_path' for CRDNN or 'hubert_hub' for HuBERT."
+        )
+
+
+def run_inference_crdnn(hparams, wav_file, device="cpu"):
+    """
+    Run inference on a single wav file using CRDNN model.
+    """
+    from speechbrain.inference import EncoderDecoderASR
 
     # Load the tokenizer directly from file
     tokenizer = hparams["tokenizer"]
@@ -99,8 +119,61 @@ def run_inference(hparams, wav_file, device="cpu"):
     return predicted_semantics
 
 
+def run_inference_hubert(hparams, wav_file, device="cpu"):
+    """
+    Run inference on a single wav file using HuBERT model.
+    """
+    # Load the tokenizer directly from file
+    tokenizer = hparams["tokenizer"]
+    tokenizer.load(hparams["tokenizer_file"])
+
+    # Move HuBERT to device
+    hubert = hparams["hubert"]
+    hubert.to(device)
+    hubert.eval()
+
+    # Load the SLU model modules
+    modules = hparams["modules"]
+    for module in modules.values():
+        module.to(device)
+        module.eval()
+
+    # Load the checkpointer
+    checkpointer = hparams["checkpointer"]
+    checkpointer.recover_if_possible()
+
+    # Load and preprocess audio
+    print(f"Loading audio from: {wav_file}")
+    signal = load_audio(wav_file, target_sr=hparams["sample_rate"])
+    signal = signal.unsqueeze(0).to(device)  # Add batch dimension
+
+    # Calculate actual length in samples
+    signal_length = torch.tensor([signal.shape[1]]).to(device)
+    # Normalize to relative length (0-1)
+    rel_length = signal_length / signal_length.float()
+
+    # Run through HuBERT encoder
+    print("Encoding audio...")
+    with torch.no_grad():
+        hubert_out = hubert(signal, rel_length)
+
+        # Decode using beam search
+        print("Decoding semantic tokens...")
+        hyps, _, _, _ = hparams["beam_searcher"](hubert_out, rel_length)
+
+        # Get the best hypothesis
+        predicted_tokens = hyps[0]
+
+        # Decode tokens to text
+        predicted_semantics = tokenizer.decode_ids(predicted_tokens)
+
+    return predicted_semantics
+
+
 def main():
-    parser = argparse.ArgumentParser(description="SLU Inference Script")
+    parser = argparse.ArgumentParser(
+        description="Unified SLU Inference Script for CRDNN and HuBERT models"
+    )
     parser.add_argument(
         "--wav_file", required=True, type=str, help="Path to the input wav file"
     )
@@ -133,9 +206,16 @@ def main():
 
     print(f"Using device: {device}")
 
-    # Run inference
+    # Determine model type
+    model_type = get_model_type(hparams)
+    print(f"Detected model type: {model_type}")
+
+    # Run inference based on model type
     try:
-        predicted_semantics = run_inference(hparams, args.wav_file, device)
+        if model_type == "crdnn":
+            predicted_semantics = run_inference_crdnn(hparams, args.wav_file, device)
+        else:  # hubert
+            predicted_semantics = run_inference_hubert(hparams, args.wav_file, device)
 
         print("\n" + "=" * 50)
         print("INFERENCE RESULTS")
