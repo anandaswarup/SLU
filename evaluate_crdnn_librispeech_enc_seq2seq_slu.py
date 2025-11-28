@@ -1,6 +1,6 @@
 """
-Evaluation script for Spoken Language Understanding (SLU) model, which processes all wav files from test.csv and outputs
-predictions to results.csv
+Evaluation script for pre-trained CRDNN ASR Encoder (trained on LibriSpeech) -> LSTM Encoder -> Attention GRU Decoder
+SLU model, which processes all wav files from test.csv and outputs predictions to results.csv
 
 Usage: python batch_inference_slu.py --test_csv <path_to_test.csv> --output_csv <path_to_results.csv> \
     --hparams <path_to_hparams> --device <cpu|cuda>
