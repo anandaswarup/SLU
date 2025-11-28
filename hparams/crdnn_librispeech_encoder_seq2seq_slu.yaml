@@ -13,7 +13,7 @@ seed: 1234
 __set_seed: !apply:speechbrain.utils.seed_everything [!ref <seed>]
 
 ####################### Data and Output Paths ##################################
-output_folder: ../models/crdnn_librispeech_enc_seq2seq_slu/slu
+output_folder: ../models/crdnn_librispeech_encoder_seq2seq_slu/slu
 save_folder: !ref <output_folder>/checkpoints
 train_log: !ref <output_folder>/train_log.txt
 test_wer_file: !ref <output_folder>/wer_test.txt
@@ -35,10 +35,10 @@ noise_annotation: !ref <manifest_folder>/noise.csv
 rir_annotation: !ref <manifest_folder>/rir.csv
 
 # Path to the tokenizer model file
-tokenizer_file: ../models/crdnn_librispeech_enc_seq2seq_slu/tokenizer/170_unigram.model
+tokenizer_file: ../models/crdnn_librispeech_encoder_seq2seq_slu/tokenizer/170_unigram.model
 
 # Path to the pretrained ASR model
-asr_model_path: ../models/crdnn_librispeech_enc_seq2seq_slu/asr-crdnn-rnnlm-librispeech
+asr_model_path: ../models/crdnn_librispeech_encoder_seq2seq_slu/asr-crdnn-rnnlm-librispeech
 
 # Whether to skip data preparation or not
 skip_prep: False
