@@ -7,7 +7,6 @@ Usage: python train_hubert_encoder_gru_decoder_slu.py --hparams hparams/hubert_e
 import argparse
 from pathlib import Path
 
-import pandas as pd
 import speechbrain as sb
 import torch
 from hyperpyyaml import load_hyperpyyaml
@@ -375,10 +374,4 @@ if __name__ == "__main__":
     )
 
     # Test
-    print("Creating id_to_file mapping...")
-    id_to_file = {}
-    df = pd.read_csv(hparams["csv_test"])
-    for i in range(len(df)):
-        id_to_file[str(df.ID[i])] = df.wav[i].split("/")[-1]
-
     slu_brain.evaluate(test_set, test_loader_kwargs=hparams["dataloader_opts"])
