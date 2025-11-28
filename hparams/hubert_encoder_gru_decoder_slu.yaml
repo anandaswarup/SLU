@@ -27,7 +27,7 @@ csv_test: !ref <manifest_folder>/test.csv
 tokenizer_file: ../models/hubert_encoder_gru_decoder_slu/tokenizer/170_unigram.model
 
 # URL for the HuBERT model
-wav2vec2_hub: "facebook/hubert-base-ls960"
+wav2vec2_hub: facebook/hubert-base-ls960
 
 # Whether to skip data preparation or not
 skip_prep: False
