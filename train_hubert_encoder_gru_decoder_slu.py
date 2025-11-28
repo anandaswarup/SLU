@@ -198,7 +198,7 @@ def dataio_prepare(hparams):
         raise NotImplementedError("sorting must be random, ascending or descending")
 
     valid_data = sb.dataio.dataset.DynamicItemDataset.from_csv(  # type: ignore
-        csv_path=hparams["csv_valid"],
+        csv_path=hparams["csv_dev"],
         replacements={"data_root": data_folder},
     )
     valid_data = valid_data.filtered_sorted(sort_key="duration")
