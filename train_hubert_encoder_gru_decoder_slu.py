@@ -1,5 +1,5 @@
 """
-Script for training a HuBERT/wav2vec2 Encoder -> Attention GRU Decoder SLU model with NLL loss.
+Script for training a HuBERT Encoder -> Attention GRU Decoder SLU model with NLL loss.
 
 Usage: python train_hubert_encoder_gru_decoder_slu.py --hparams hparams/hubert_encoder_gru_decoder_slu.yaml
 """
