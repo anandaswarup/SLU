@@ -1,6 +1,6 @@
 """
-Inference script for Spoken Language Understanding (SLU) model. Decodes a single wav file and outputs the predicted s
-emantic string.
+Inference script for pre-trained CRDNN ASR Encoder (trained on LibriSpeech) -> LSTM Encoder -> Attention GRU Decoder
+SLU model. Decodes a single wav file and outputs the predicted semantic string.
 
 Usage:
     python inference_slu.py --wav_file <path_to_wav> --hparams <Path to the hyperparameters file> --device <cpu|cuda>
