@@ -27,7 +27,7 @@ csv_test: !ref <manifest_folder>/test.csv
 tokenizer_file: ../models/hubert_encoder_gru_decoder_slu/tokenizer/170_unigram.model
 
 # URL for the HuBERT model
-wav2vec2_hub: facebook/hubert-base-ls960
+hubert_hub: facebook/hubert-base-ls960
 
 # Whether to skip data preparation or not
 skip_prep: False
@@ -36,15 +36,15 @@ skip_prep: False
 number_of_epochs: 35
 batch_size: 16
 lr: 0.0003
-lr_wav2vec2: 0.00001
+lr_hubert: 0.00001
 token_type: unigram # ["unigram", "bpe", "char"]
 sorting: random
 
-#freeze all wav2vec2
-freeze_wav2vec2: False
+#freeze all hubert
+freeze_hubert: False
 
-#set to true to freeze the CONV part of the wav2vec2 model
-freeze_wav2vec2_conv: True
+#set to true to freeze the CONV part of the hubert model
+freeze_hubert_conv: True
 
 ####################### Model Parameters #######################################
 sample_rate: 16000
@@ -70,11 +70,11 @@ epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
     limit: !ref <number_of_epochs>
 
 # Models
-wav2vec2: !new:speechbrain.integrations.huggingface.hubert.HuBERT
-    source: !ref <wav2vec2_hub>
+hubert: !new:speechbrain.integrations.huggingface.hubert.HuBERT
+    source: !ref <hubert_hub>
     output_norm: True
-    freeze: !ref <freeze_wav2vec2>
-    save_path: !ref <save_folder>/wav2vec2_checkpoint
+    freeze: !ref <freeze_hubert>
+    save_path: !ref <save_folder>/hubert_checkpoint
 
 output_emb: !new:speechbrain.nnet.embedding.Embedding
     num_embeddings: !ref <output_neurons>
@@ -129,7 +129,7 @@ wav_augment: !new:speechbrain.augment.augmenter.Augmenter
         !ref <drop_chunk>]
 
 modules:
-    wav2vec2: !ref <wav2vec2>
+    hubert: !ref <hubert>
     output_emb: !ref <output_emb>
     dec: !ref <dec>
     seq_lin: !ref <seq_lin>
@@ -164,8 +164,8 @@ beam_searcher: !new:speechbrain.decoders.S2SRNNBeamSearcher
 opt_class: !name:torch.optim.Adam
     lr: !ref <lr>
 
-wav2vec2_opt_class: !name:torch.optim.Adam
-    lr: !ref <lr_wav2vec2>
+hubert_opt_class: !name:torch.optim.Adam
+    lr: !ref <lr_hubert>
 
 lr_annealing: !new:speechbrain.nnet.schedulers.NewBobScheduler
     initial_value: !ref <lr>
@@ -173,8 +173,8 @@ lr_annealing: !new:speechbrain.nnet.schedulers.NewBobScheduler
     annealing_factor: 0.8
     patient: 0
 
-lr_annealing_wav2vec2: !new:speechbrain.nnet.schedulers.NewBobScheduler
-    initial_value: !ref <lr_wav2vec2>
+lr_annealing_hubert: !new:speechbrain.nnet.schedulers.NewBobScheduler
+    initial_value: !ref <lr_hubert>
     improvement_threshold: 0.0025
     annealing_factor: 0.9
 
@@ -182,9 +182,9 @@ checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
     checkpoints_dir: !ref <save_folder>
     recoverables:
         model: !ref <model>
-        wav2vec2: !ref <wav2vec2>
+        hubert: !ref <hubert>
         scheduler: !ref <lr_annealing>
-        lr_annealing_wav2vec2: !ref <lr_annealing_wav2vec2>
+        lr_annealing_hubert: !ref <lr_annealing_hubert>
         counter: !ref <epoch_counter>
 
 log_softmax: !new:speechbrain.nnet.activations.Softmax
