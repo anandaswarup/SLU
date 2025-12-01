@@ -62,7 +62,9 @@ slu_beam_size: 80
 eos_threshold: 1.5
 temperature: 1.25
 
+num_workers: 2
 dataloader_opts:
+    num_workers: !ref <num_workers>
     batch_size: !ref <batch_size>
     shuffle: True
 
