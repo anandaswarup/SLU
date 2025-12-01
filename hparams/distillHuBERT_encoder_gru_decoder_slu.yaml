@@ -1,6 +1,6 @@
 # ############################################################################
 # Model: Direct SLU
-# Encoder: Pre-trained HuBERT Encoder
+# Encoder: Pre-trained distillHuBERT Encoder
 # Decoder: GRU + beamsearch
 # Tokens: BPE with unigram
 # losses: NLL
@@ -11,7 +11,7 @@ seed: 1986
 __set_seed: !apply:speechbrain.utils.seed_everything [!ref <seed>]
 
 ####################### Data and Output Paths ##################################
-output_folder: !ref ../models/hubert_encoder_gru_decoder_slu/slu
+output_folder: !ref ../models/distillHuBERT_encoder_gru_decoder_slu/slu
 save_folder: !ref <output_folder>/checkpoints
 train_log: !ref <output_folder>/train_log.txt
 test_wer_file: !ref <output_folder>/wer_test_real.txt
@@ -24,16 +24,16 @@ csv_dev: !ref <manifest_folder>/dev.csv
 csv_test: !ref <manifest_folder>/test.csv
 
 # Path to the tokenizer model file
-tokenizer_file: ../models/hubert_encoder_gru_decoder_slu/tokenizer/170_unigram.model
+tokenizer_file: ../models/distillHuBERT_encoder_gru_decoder_slu/tokenizer/170_unigram.model
 
 # URL for the HuBERT model
-hubert_hub: facebook/hubert-base-ls960
+hubert_hub: ntu-spml/distilhubert
 
 # Whether to skip data preparation or not
 skip_prep: False
 
 ####################### Training Parameters ####################################
-number_of_epochs: 35
+number_of_epochs: 15
 batch_size: 8
 lr: 0.0003
 lr_hubert: 0.00001
