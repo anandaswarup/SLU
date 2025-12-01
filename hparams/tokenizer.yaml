@@ -3,7 +3,7 @@
 #############################################################################
 
 ####################### Data files ####################################
-output_folder: ../models/hubert_encoder_gru_decoder_slu/tokenizer
+output_folder: ../models/distillHuBERT_encoder_gru_decoder_slu/tokenizer
 train_log: !ref <output_folder>/train_log.txt
 
 # Data files
