@@ -1,55 +1,282 @@
 """
-Compute MACs and latency for SLU models. This script profiles both CRDNN and HuBERT-based SLU models, computing MACs
-(multiply-accumulate operations) and inference latency.
+Script to profile FLOPs/MACs and parameters for SLU models using ptflops. This script profiles the computational 
+requirements of the SLU models with a random 1-second audio tensor at 16kHz sampling rate.
+
+Usage:
+    python compute_macs.py --hparams <path_to_hparams> --device <cpu|cuda> --compute-macs
 """
 
+from __future__ import annotations
+
 import argparse
-import sys
-import time
-from typing import Any
+import os
+import warnings
+from typing import Any, Callable
 
 import torch
 import torch.nn as nn
 from hyperpyyaml import load_hyperpyyaml
 from ptflops import get_model_complexity_info
 
+# Suppress warnings
+os.environ["PYTHONWARNINGS"] = "ignore"
+warnings.filterwarnings("ignore")
 
-def profile_model(
-    model: nn.Module,
-    input_constructor: Any,
-    verbose: bool = False,
-    custom_modules_hooks: dict | None = None,
-) -> tuple[float, float]:
-    """Profile a model using ptflops.
+# Constants for 1 second of audio at 16kHz
+SAMPLE_RATE = 16000
+AUDIO_DURATION = 1.0  # seconds
+NUM_SAMPLES = int(SAMPLE_RATE * AUDIO_DURATION)
 
-    Args:
-        model: The model to profile.
-        input_constructor: Function to construct input for the model.
-        verbose: Whether to print verbose output.
-        custom_modules_hooks: Custom hooks for specific module types.
+# Sequence lengths to profile for decoder
+DECODER_SEQ_LENGTHS = [16, 32, 64]
 
-    Returns:
-        Tuple of (MACs, params) in billions/millions.
+
+def format_macs(macs: int | float) -> str:
+    """Format MACs value with proper units."""
+    if macs >= 1e9:
+        return f"{macs:,.0f} ({macs / 1e9:.2f} GMACs)"
+    elif macs >= 1e6:
+        return f"{macs:,.0f} ({macs / 1e6:.2f} MMACs)"
+    else:
+        return f"{macs:,.0f}"
+
+
+def format_params(params: int | float) -> str:
+    """Format parameters value with proper units."""
+    if params >= 1e6:
+        return f"{params:,.0f} ({params / 1e6:.2f} M)"
+    elif params >= 1e3:
+        return f"{params:,.0f} ({params / 1e3:.2f} K)"
+    else:
+        return f"{params:,.0f}"
+
+
+class HuBERTEncoderWrapper(nn.Module):
+    """Wrapper for HuBERT encoder for profiling."""
+
+    def __init__(self, hubert: nn.Module) -> None:
+        super().__init__()
+        self.hubert = hubert
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size = x.shape[0]
+        rel_length = torch.ones(batch_size, device=x.device)
+        return self.hubert(x, rel_length)
+
+
+class CRDNNEncoderWrapper(nn.Module):
+    """Wrapper for CRDNN ASR encoder for profiling."""
+
+    def __init__(self, asr_encoder: nn.Module, slu_enc: nn.Module) -> None:
+        super().__init__()
+        self.asr_encoder = asr_encoder
+        self.slu_enc = slu_enc
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size = x.shape[0]
+        rel_length = torch.ones(batch_size, device=x.device)
+        asr_encoded = self.asr_encoder(x, lengths=rel_length)
+        return self.slu_enc(asr_encoded)
+
+
+class ASREncoderWrapper(nn.Module):
+    """Wrapper for just the ASR encoder (CRDNN) for profiling."""
+
+    def __init__(self, asr_encoder: nn.Module) -> None:
+        super().__init__()
+        self.asr_encoder = asr_encoder
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size = x.shape[0]
+        rel_length = torch.ones(batch_size, device=x.device)
+        return self.asr_encoder(x, lengths=rel_length)
+
+
+class SLUEncoderWrapper(nn.Module):
+    """Wrapper for SLU encoder for profiling."""
+
+    def __init__(self, slu_enc: nn.Module, asr_encoder_dim: int) -> None:
+        super().__init__()
+        self.slu_enc = slu_enc
+        self.asr_encoder_dim = asr_encoder_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.slu_enc(x)
+
+
+class DecoderWrapper(nn.Module):
     """
-    macs, params = get_model_complexity_info(
-        model,
-        input_res=(1,),
-        input_constructor=input_constructor,
-        as_strings=False,
-        print_per_layer_stat=verbose,
-        custom_modules_hooks=custom_modules_hooks or {},
-    )
-    return float(macs), float(params)  # type: ignore[arg-type]
+    Wrapper for decoder components for profiling.
+
+    This wrapper profiles the decoder for a given sequence length,
+    simulating the full decoding process using the AttentionalRNNDecoder's
+    forward method which processes the entire input sequence at once.
+    """
+
+    def __init__(
+        self,
+        output_emb: nn.Module,
+        dec: nn.Module,
+        seq_lin: nn.Module,
+        encoder_dim: int,
+        seq_length: int,
+    ) -> None:
+        super().__init__()
+        self.output_emb = output_emb
+        self.dec = dec
+        self.seq_lin = seq_lin
+        self.encoder_dim = encoder_dim
+        self.seq_length = seq_length
+
+    def forward(self, encoder_out: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass simulating decoding for seq_length steps.
+
+        Args:
+            encoder_out: Encoder output of shape (batch, enc_time, enc_dim)
+
+        Returns:
+            Output logits of shape (batch, seq_length, vocab_size)
+        """
+        batch_size = encoder_out.shape[0]
+        device = encoder_out.device
+        rel_length = torch.ones(batch_size, device=device)
+
+        # Create input tokens for the full sequence (simulating teacher forcing)
+        # Shape: (batch, seq_length)
+        tokens = torch.zeros(
+            batch_size, self.seq_length, dtype=torch.long, device=device
+        )
+        # Embed tokens: (batch, seq_length, emb_dim)
+        embedded = self.output_emb(tokens)
+
+        # Run decoder for the full sequence
+        # AttentionalRNNDecoder.forward() signature: (inp_tensor, enc_states, wav_len)
+        dec_out, _ = self.dec(embedded, encoder_out, rel_length)
+
+        # Linear projection to output vocabulary
+        # dec_out shape: (batch, seq_length, dec_neurons)
+        output = self.seq_lin(dec_out)
+
+        return output
 
 
-def get_model_type(hparams: dict) -> str:
-    """Determine the model type from hyperparameters.
+class HuBERTSLUModel(nn.Module):
+    """
+    Wrapper model for HuBERT-based SLU for profiling.
 
-    Args:
-        hparams: The loaded hyperparameters dictionary.
+    This model wraps the HuBERT encoder and the SLU decoder components
+    to enable profiling with ptflops.
+    """
 
-    Returns:
-        Either "crdnn" or "hubert" based on the config.
+    def __init__(
+        self,
+        hubert: nn.Module,
+        output_emb: nn.Module,
+        dec: nn.Module,
+        seq_lin: nn.Module,
+    ) -> None:
+        super().__init__()
+        self.hubert = hubert
+        self.output_emb = output_emb
+        self.dec = dec
+        self.seq_lin = seq_lin
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass for profiling.
+
+        Args:
+            x: Input audio tensor of shape (batch, time)
+
+        Returns:
+            Output logits
+        """
+        batch_size = x.shape[0]
+        rel_length = torch.ones(batch_size, device=x.device)
+
+        # HuBERT encoding
+        encoded = self.hubert(x, rel_length)
+
+        # For profiling, we simulate one decoder step
+        # Create a dummy target token (BOS token = 0)
+        # Shape: (batch, 1)
+        dummy_token = torch.zeros(batch_size, 1, dtype=torch.long, device=x.device)
+        # Embed: (batch, 1, emb_dim)
+        embedded = self.output_emb(dummy_token)
+
+        # Run decoder
+        # AttentionalRNNDecoder.forward() signature: (inp_tensor, enc_states, wav_len)
+        dec_out, _ = self.dec(embedded, encoded, rel_length)
+
+        # Linear projection to output vocabulary
+        output = self.seq_lin(dec_out)
+
+        return output
+
+
+class CRDNNSLUModel(nn.Module):
+    """
+    Wrapper model for CRDNN-based SLU for profiling.
+
+    This model wraps the ASR encoder, SLU encoder, and decoder components
+    to enable profiling with ptflops.
+    """
+
+    def __init__(
+        self,
+        asr_encoder: nn.Module,
+        slu_enc: nn.Module,
+        output_emb: nn.Module,
+        dec: nn.Module,
+        seq_lin: nn.Module,
+    ) -> None:
+        super().__init__()
+        self.asr_encoder = asr_encoder
+        self.slu_enc = slu_enc
+        self.output_emb = output_emb
+        self.dec = dec
+        self.seq_lin = seq_lin
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass for profiling.
+
+        Args:
+            x: Input audio tensor of shape (batch, time)
+
+        Returns:
+            Output logits
+        """
+        batch_size = x.shape[0]
+        rel_length = torch.ones(batch_size, device=x.device)
+
+        # ASR encoder
+        asr_encoded = self.asr_encoder(x, lengths=rel_length)
+
+        # SLU encoder
+        encoded = self.slu_enc(asr_encoded)
+
+        # For profiling, we simulate one decoder step
+        # Create a dummy target token (BOS token = 0)
+        # Shape: (batch, 1)
+        dummy_token = torch.zeros(batch_size, 1, dtype=torch.long, device=x.device)
+        # Embed: (batch, 1, emb_dim)
+        embedded = self.output_emb(dummy_token)
+
+        # Run decoder
+        # AttentionalRNNDecoder.forward() signature: (inp_tensor, enc_states, wav_len)
+        dec_out, _ = self.dec(embedded, encoded, rel_length)
+
+        # Linear projection to output vocabulary
+        output = self.seq_lin(dec_out)
+
+        return output
+
+
+def get_model_type(hparams: dict[str, Any]) -> str:
+    """
+    Determines the model type based on hyperparameters.
     """
     if "asr_model_path" in hparams:
         return "crdnn"
@@ -57,875 +284,445 @@ def get_model_type(hparams: dict) -> str:
         return "hubert"
     else:
         raise ValueError(
-            "Unknown model type. Expected 'asr_model_path' for CRDNN "
-            "or 'hubert_hub'/'hubert' for HuBERT in hparams."
+            "Could not determine model type from hyperparameters. "
+            "Expected 'asr_model_path' for CRDNN or 'hubert_hub' for HuBERT."
         )
 
 
-# =============================================================================
-# Model Wrappers for CRDNN
-# =============================================================================
-
-
-class ASREncoderCNNWrapper(nn.Module):
-    """Wrapper for ASR encoder CNN layers."""
-
-    def __init__(self, asr_encoder: nn.Module) -> None:
-        super().__init__()
-        self.cnn = asr_encoder.CNN  # type: ignore[union-attr]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.cnn(x)  # type: ignore[misc]
-
-
-class ASREncoderRNNWrapper(nn.Module):
-    """Wrapper for ASR encoder RNN layers."""
-
-    def __init__(self, asr_encoder: nn.Module) -> None:
-        super().__init__()
-        self.rnn = asr_encoder.RNN  # type: ignore[union-attr]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.rnn(x)  # type: ignore[misc]
-
-
-class ASREncoderDNNWrapper(nn.Module):
-    """Wrapper for ASR encoder DNN layers."""
-
-    def __init__(self, asr_encoder: nn.Module) -> None:
-        super().__init__()
-        self.dnn = asr_encoder.DNN  # type: ignore[union-attr]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.dnn(x)  # type: ignore[misc]
-
-
-class ASREncoderWrapper(nn.Module):
-    """Wrapper for full ASR encoder."""
-
-    def __init__(self, asr_encoder: nn.Module) -> None:
-        super().__init__()
-        self.encoder = asr_encoder
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.encoder(x)
-
-
-# =============================================================================
-# Model Wrappers for HuBERT
-# =============================================================================
-
-
-class HuBERTEncoderWrapper(nn.Module):
-    """Wrapper for HuBERT encoder."""
-
-    def __init__(self, hubert: nn.Module) -> None:
-        super().__init__()
-        self.hubert = hubert
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.hubert(x)
-
-
-# =============================================================================
-# Model Wrappers for SLU Components (shared)
-# =============================================================================
-
-
-class SLUEncoderLSTMWrapper(nn.Module):
-    """Wrapper for SLU encoder LSTM."""
-
-    def __init__(self, slu_encoder: nn.Module) -> None:
-        super().__init__()
-        self.lstm = slu_encoder.lstm  # type: ignore[union-attr]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.lstm(x)[0]  # type: ignore[misc]
-
-
-class SLUEncoderLinearWrapper(nn.Module):
-    """Wrapper for SLU encoder linear layer."""
-
-    def __init__(self, slu_encoder: nn.Module) -> None:
-        super().__init__()
-        self.linear = slu_encoder.linear  # type: ignore[union-attr]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.linear(x)  # type: ignore[misc]
-
-
-class SLUEncoderWrapper(nn.Module):
-    """Wrapper for full SLU encoder."""
-
-    def __init__(self, slu_encoder: nn.Module) -> None:
-        super().__init__()
-        self.encoder = slu_encoder
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.encoder(x)[0]
-
-
-class SLUDecoderEmbeddingWrapper(nn.Module):
-    """Wrapper for SLU decoder embedding layer."""
-
-    def __init__(self, slu_decoder: nn.Module) -> None:
-        super().__init__()
-        self.embedding = slu_decoder.emb  # type: ignore[union-attr]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.embedding(x)  # type: ignore[misc]
-
-
-class SLUDecoderAttentionalRNNWrapper(nn.Module):
-    """Wrapper for SLU decoder attentional RNN."""
-
-    def __init__(self, slu_decoder: nn.Module) -> None:
-        super().__init__()
-        self.rnn = slu_decoder.dec  # type: ignore[union-attr]
-
-    def forward(
-        self,
-        enc_states: torch.Tensor,
-        enc_lens: torch.Tensor,
-        embedded: torch.Tensor,
-    ) -> torch.Tensor:
-        return self.rnn(enc_states, enc_lens, embedded)  # type: ignore[misc]
-
-
-class SLUDecoderLinearWrapper(nn.Module):
-    """Wrapper for SLU decoder linear layer."""
-
-    def __init__(self, slu_decoder: nn.Module) -> None:
-        super().__init__()
-        self.linear = slu_decoder.fc  # type: ignore[union-attr]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.linear(x)  # type: ignore[misc]
-
-
-class SLUDecoderWrapper(nn.Module):
-    """Wrapper for full SLU decoder (embedding + attention + linear)."""
-
-    def __init__(self, slu_decoder: nn.Module) -> None:
-        super().__init__()
-        self.decoder = slu_decoder
-
-    def forward(
-        self,
-        enc_states: torch.Tensor,
-        enc_lens: torch.Tensor,
-        tokens: torch.Tensor,
-    ) -> torch.Tensor:
-        emb = self.decoder.emb(tokens)  # type: ignore[union-attr]
-        dec_out, _ = self.decoder.dec(enc_states, enc_lens, emb)  # type: ignore[union-attr]
-        return self.decoder.fc(dec_out)  # type: ignore[union-attr]
-
-
-# =============================================================================
-# MAC Computation for CRDNN
-# =============================================================================
-
-
-def compute_macs_crdnn(hparams: dict, device: str, verbose: bool = False) -> dict:
-    """Compute MACs for CRDNN-based SLU model.
-
-    Args:
-        hparams: The loaded hyperparameters.
-        device: Device to run profiling on.
-        verbose: Whether to print detailed stats.
+def run_profiling(
+    model: nn.Module,
+    input_shape: tuple[int, ...],
+    input_constructor: Callable[[tuple[int, ...]], torch.Tensor],
+    title: str,
+) -> tuple[int, int]:
+    """
+    Run ptflops profiling on a model.
 
     Returns:
-        Dictionary with MAC counts for each component.
+        Tuple of (macs, params) as integers
     """
-    # Load ASR encoder
-    asr_encoder = hparams["asr_model"]
-    asr_encoder.to(device)
-    asr_encoder.eval()
+    print(f"\n{title}")
+    print("-" * 70)
 
-    # SLU components
-    slu_encoder = hparams["slu_encoder"]
-    slu_encoder.to(device)
-    slu_encoder.eval()
-
-    slu_decoder = hparams["seq_decoder"]
-    slu_decoder.to(device)
-    slu_decoder.eval()
-
-    # Input dimensions
-    input_length = 16000 * 10  # 10 seconds of audio
-    hop_length = hparams.get("hop_length", 160)
-    n_mels = hparams.get("n_mels", 80)
-    seq_length = (input_length // hop_length) + 1
-    output_tokens = 50  # Average output sequence length
-
-    results = {}
-
-    # Profile ASR encoder CNN
-    def cnn_input_constructor(input_res: tuple) -> dict:
-        return {"x": torch.randn(1, seq_length, n_mels).to(device)}
-
-    cnn_wrapper = ASREncoderCNNWrapper(asr_encoder)
-    cnn_wrapper.to(device)
-    cnn_macs, cnn_params = profile_model(
-        cnn_wrapper, cnn_input_constructor, verbose=verbose
+    result = get_model_complexity_info(
+        model,
+        input_shape,
+        input_constructor=input_constructor,  # type: ignore[arg-type]
+        as_strings=False,
+        print_per_layer_stat=True,
+        verbose=True,
     )
-    results["asr_cnn"] = {"macs": cnn_macs, "params": cnn_params}
 
-    # Get CNN output shape for RNN input
-    with torch.no_grad():
-        cnn_out = cnn_wrapper(torch.randn(1, seq_length, n_mels).to(device))
-        cnn_out_shape = cnn_out.shape
+    # Handle the return value - ptflops returns (macs, params)
+    macs = int(result[0]) if result[0] is not None else 0
+    params = int(result[1]) if result[1] is not None else 0
 
-    # Profile ASR encoder RNN
-    def rnn_input_constructor(input_res: tuple) -> dict:
-        return {"x": torch.randn(cnn_out_shape).to(device)}
+    return macs, params
 
-    rnn_wrapper = ASREncoderRNNWrapper(asr_encoder)
-    rnn_wrapper.to(device)
-    rnn_macs, rnn_params = profile_model(
-        rnn_wrapper, rnn_input_constructor, verbose=verbose
-    )
-    results["asr_rnn"] = {"macs": rnn_macs, "params": rnn_params}
 
-    # Get RNN output shape for DNN input
-    with torch.no_grad():
-        rnn_out = rnn_wrapper(torch.randn(cnn_out_shape).to(device))
-        rnn_out_shape = rnn_out.shape
+def profile_decoder_seq_lengths(
+    output_emb: nn.Module,
+    dec: nn.Module,
+    seq_lin: nn.Module,
+    encoder_dim: int,
+    enc_time: int,
+    device: str,
+) -> None:
+    """
+    Profile decoder for different sequence lengths.
+    """
+    print("\n" + "=" * 70)
+    print("DECODER PROFILING FOR DIFFERENT SEQUENCE LENGTHS")
+    print("=" * 70)
 
-    # Profile ASR encoder DNN
-    def dnn_input_constructor(input_res: tuple) -> dict:
-        return {"x": torch.randn(rnn_out_shape).to(device)}
+    for seq_len in DECODER_SEQ_LENGTHS:
+        decoder_wrapper = DecoderWrapper(output_emb, dec, seq_lin, encoder_dim, seq_len)
+        decoder_wrapper.to(device)
+        decoder_wrapper.eval()
 
-    dnn_wrapper = ASREncoderDNNWrapper(asr_encoder)
-    dnn_wrapper.to(device)
-    dnn_macs, dnn_params = profile_model(
-        dnn_wrapper, dnn_input_constructor, verbose=verbose
-    )
-    results["asr_dnn"] = {"macs": dnn_macs, "params": dnn_params}
+        # Input shape for decoder: (batch, enc_time, encoder_dim)
+        input_shape = (1, enc_time, encoder_dim)
 
-    # Get full ASR encoder output shape
-    with torch.no_grad():
-        asr_out = asr_encoder(torch.randn(1, seq_length, n_mels).to(device))
-        asr_out_shape = asr_out.shape
+        def input_constructor(
+            shape: tuple[int, ...], dev: str = device
+        ) -> torch.Tensor:
+            return torch.randn(shape, device=dev)
 
-    # Profile SLU encoder LSTM
-    def slu_lstm_input_constructor(input_res: tuple) -> dict:
-        return {"x": torch.randn(asr_out_shape).to(device)}
-
-    slu_lstm_wrapper = SLUEncoderLSTMWrapper(slu_encoder)
-    slu_lstm_wrapper.to(device)
-    slu_lstm_macs, slu_lstm_params = profile_model(
-        slu_lstm_wrapper, slu_lstm_input_constructor, verbose=verbose
-    )
-    results["slu_encoder_lstm"] = {"macs": slu_lstm_macs, "params": slu_lstm_params}
-
-    # Get LSTM output shape
-    with torch.no_grad():
-        lstm_out = slu_lstm_wrapper(torch.randn(asr_out_shape).to(device))
-        lstm_out_shape = lstm_out.shape
-
-    # Profile SLU encoder linear
-    def slu_linear_input_constructor(input_res: tuple) -> dict:
-        return {"x": torch.randn(lstm_out_shape).to(device)}
-
-    slu_linear_wrapper = SLUEncoderLinearWrapper(slu_encoder)
-    slu_linear_wrapper.to(device)
-    slu_linear_macs, slu_linear_params = profile_model(
-        slu_linear_wrapper, slu_linear_input_constructor, verbose=verbose
-    )
-    results["slu_encoder_linear"] = {
-        "macs": slu_linear_macs,
-        "params": slu_linear_params,
-    }
-
-    # Get SLU encoder output shape
-    with torch.no_grad():
-        slu_enc_out = slu_encoder(torch.randn(asr_out_shape).to(device))[0]
-        slu_enc_out_shape = slu_enc_out.shape
-
-    # Profile SLU decoder embedding
-    def emb_input_constructor(input_res: tuple) -> dict:
-        return {"x": torch.randint(0, 1000, (1, output_tokens)).to(device)}
-
-    emb_wrapper = SLUDecoderEmbeddingWrapper(slu_decoder)
-    emb_wrapper.to(device)
-    emb_macs, emb_params = profile_model(
-        emb_wrapper, emb_input_constructor, verbose=verbose
-    )
-    results["slu_decoder_embedding"] = {"macs": emb_macs, "params": emb_params}
-
-    # Profile SLU decoder attention RNN
-    def attn_input_constructor(input_res: tuple) -> dict:
-        enc_states = torch.randn(slu_enc_out_shape).to(device)
-        enc_lens = torch.ones(1).to(device)
-        emb_out = torch.randn(1, output_tokens, slu_decoder.emb.embedding_dim).to(
-            device
+        macs, params = run_profiling(
+            decoder_wrapper,
+            input_shape,
+            input_constructor,
+            f"Decoder (seq_length={seq_len})",
         )
-        return {"enc_states": enc_states, "enc_lens": enc_lens, "embedded": emb_out}
 
-    attn_wrapper = SLUDecoderAttentionalRNNWrapper(slu_decoder)
-    attn_wrapper.to(device)
-    attn_macs, attn_params = profile_model(
-        attn_wrapper, attn_input_constructor, verbose=verbose
-    )
-    results["slu_decoder_attention"] = {"macs": attn_macs, "params": attn_params}
-
-    # Profile SLU decoder linear
-    dec_hidden_size = slu_decoder.dec.rnn.hidden_size
-
-    def dec_linear_input_constructor(input_res: tuple) -> dict:
-        return {"x": torch.randn(1, output_tokens, dec_hidden_size).to(device)}
-
-    dec_linear_wrapper = SLUDecoderLinearWrapper(slu_decoder)
-    dec_linear_wrapper.to(device)
-    dec_linear_macs, dec_linear_params = profile_model(
-        dec_linear_wrapper, dec_linear_input_constructor, verbose=verbose
-    )
-    results["slu_decoder_linear"] = {
-        "macs": dec_linear_macs,
-        "params": dec_linear_params,
-    }
-
-    # Compute totals
-    total_macs = sum(r["macs"] for r in results.values())
-    total_params = sum(r["params"] for r in results.values())
-    results["total"] = {"macs": total_macs, "params": total_params}
-
-    return results
+        print(f"\n--- Summary for seq_length={seq_len} ---")
+        print(f"  MACs: {format_macs(macs)}")
+        print(f"  FLOPs (approx 2x MACs): {format_macs(2 * macs)}")
+        print(f"  Parameters: {format_params(params)}")
+        print(f"  MACs per token: {format_macs(macs / seq_len)}")
 
 
-# =============================================================================
-# MAC Computation for HuBERT
-# =============================================================================
-
-
-def compute_macs_hubert(hparams: dict, device: str, verbose: bool = False) -> dict:
-    """Compute MACs for HuBERT-based SLU model.
-
-    The HuBERT model consists of:
-    - HuBERT encoder
-    - Attentional GRU decoder (embedding + attention RNN + linear)
-
-    Args:
-        hparams: The loaded hyperparameters.
-        device: Device to run profiling on.
-        verbose: Whether to print detailed stats.
-
-    Returns:
-        Dictionary with MAC counts for each component.
+def profile_hubert_model(hparams: dict[str, Any], device: str = "cpu") -> None:
     """
-    # Load HuBERT encoder
+    Profile the HuBERT-based SLU model with separate components:
+    - HuBERT Encoder
+    - SLU Decoder
+    """
+    print("=" * 70)
+    print("PROFILING HuBERT-based SLU Model")
+    print("=" * 70)
+    print(f"Input: 1 second of audio at {SAMPLE_RATE}Hz ({NUM_SAMPLES} samples)")
+    print(f"Device: {device}")
+    print("=" * 70)
+
+    # Get model components
     hubert = hparams["hubert"]
+    output_emb = hparams["output_emb"]
+    dec = hparams["dec"]
+    seq_lin = hparams["seq_lin"]
+    encoder_dim = hparams["encoder_dim"]
+
+    # Move to device
     hubert.to(device)
-    hubert.eval()
+    output_emb.to(device)
+    dec.to(device)
+    seq_lin.to(device)
 
-    # Decoder
-    slu_decoder = hparams["seq_decoder"]
-    slu_decoder.to(device)
-    slu_decoder.eval()
+    def audio_input_constructor(
+        input_shape: tuple[int, ...], dev: str = device
+    ) -> torch.Tensor:
+        return torch.randn(input_shape, device=dev)
 
-    # Input dimensions
-    input_length = 16000 * 10  # 10 seconds of audio
-    output_tokens = 50  # Average output sequence length
+    # ========== 1. Profile HuBERT Encoder ==========
+    print("\n" + "=" * 70)
+    print("1. HuBERT ENCODER")
+    print("=" * 70)
 
-    results = {}
+    encoder_wrapper = HuBERTEncoderWrapper(hubert)
+    encoder_wrapper.to(device)
+    encoder_wrapper.eval()
 
-    # Profile HuBERT encoder
-    def hubert_input_constructor(input_res: tuple) -> dict:
-        return {"x": torch.randn(1, input_length).to(device)}
-
-    hubert_wrapper = HuBERTEncoderWrapper(hubert)
-    hubert_wrapper.to(device)
-    hubert_macs, hubert_params = profile_model(
-        hubert_wrapper, hubert_input_constructor, verbose=verbose
+    encoder_macs, encoder_params = run_profiling(
+        encoder_wrapper,
+        (1, NUM_SAMPLES),
+        audio_input_constructor,
+        "HuBERT Encoder",
     )
-    results["hubert_encoder"] = {"macs": hubert_macs, "params": hubert_params}
 
-    # Get HuBERT output shape for decoder input
-    with torch.no_grad():
-        hubert_out = hubert(torch.randn(1, input_length).to(device))
-        hubert_out_shape = hubert_out.shape
+    print("\n--- HuBERT Encoder Summary ---")
+    print(f"  MACs: {format_macs(encoder_macs)}")
+    print(f"  FLOPs (approx 2x MACs): {format_macs(2 * encoder_macs)}")
+    print(f"  Parameters: {format_params(encoder_params)}")
 
-    # Profile decoder embedding
-    def emb_input_constructor(input_res: tuple) -> dict:
-        return {"x": torch.randint(0, 1000, (1, output_tokens)).to(device)}
+    # Calculate encoder output time dimension
+    # HuBERT downsamples by factor of 320 (conv layers)
+    enc_time = NUM_SAMPLES // 320
 
-    emb_wrapper = SLUDecoderEmbeddingWrapper(slu_decoder)
-    emb_wrapper.to(device)
-    emb_macs, emb_params = profile_model(
-        emb_wrapper, emb_input_constructor, verbose=verbose
+    # ========== 2. Profile SLU Decoder for different sequence lengths ==========
+    decoder_results = profile_decoder_seq_lengths_with_totals(
+        output_emb, dec, seq_lin, encoder_dim, enc_time, device
     )
-    results["decoder_embedding"] = {"macs": emb_macs, "params": emb_params}
 
-    # Profile decoder attention RNN
-    def attn_input_constructor(input_res: tuple) -> dict:
-        enc_states = torch.randn(hubert_out_shape).to(device)
-        enc_lens = torch.ones(1).to(device)
-        emb_out = torch.randn(1, output_tokens, slu_decoder.emb.embedding_dim).to(
-            device
+    # ========== Total Model Summary ==========
+    print("\n" + "=" * 70)
+    print("TOTAL MODEL SUMMARY")
+    print("=" * 70)
+
+    # Parameter counts
+    hubert_encoder_params = sum(p.numel() for p in hubert.parameters())
+    decoder_params = (
+        sum(p.numel() for p in output_emb.parameters())
+        + sum(p.numel() for p in dec.parameters())
+        + sum(p.numel() for p in seq_lin.parameters())
+    )
+    total_params = hubert_encoder_params + decoder_params
+
+    print("\n--- Component Breakdown ---")
+    print("\n  HuBERT Encoder:")
+    print(f"    MACs: {format_macs(encoder_macs)}")
+    print(f"    FLOPs: {format_macs(2 * encoder_macs)}")
+    print(f"    Parameters: {format_params(hubert_encoder_params)}")
+
+    print("\n  SLU Decoder (parameters same for all seq lengths):")
+    print(f"    Parameters: {format_params(decoder_params)}")
+    for seq_len, (dec_macs, _) in decoder_results.items():
+        print(
+            f"    seq_length={seq_len}: MACs={format_macs(dec_macs)}, FLOPs={format_macs(2 * dec_macs)}"
         )
-        return {"enc_states": enc_states, "enc_lens": enc_lens, "embedded": emb_out}
 
-    attn_wrapper = SLUDecoderAttentionalRNNWrapper(slu_decoder)
-    attn_wrapper.to(device)
-    attn_macs, attn_params = profile_model(
-        attn_wrapper, attn_input_constructor, verbose=verbose
-    )
-    results["decoder_attention"] = {"macs": attn_macs, "params": attn_params}
+    print("\n--- Totals (Encoder + Decoder) ---")
+    print(f"\n  Total Encoder MACs: {format_macs(encoder_macs)}")
+    print(f"  Total Encoder FLOPs: {format_macs(2 * encoder_macs)}")
 
-    # Profile decoder linear
-    dec_hidden_size = slu_decoder.dec.rnn.hidden_size
+    # Show total for each decoder sequence length
+    for seq_len, (dec_macs, _) in decoder_results.items():
+        total_macs = encoder_macs + dec_macs
+        print(f"\n  With Decoder seq_length={seq_len}:")
+        print(f"    Total MACs: {format_macs(total_macs)}")
+        print(f"    Total FLOPs: {format_macs(2 * total_macs)}")
 
-    def dec_linear_input_constructor(input_res: tuple) -> dict:
-        return {"x": torch.randn(1, output_tokens, dec_hidden_size).to(device)}
+    print(f"\n  Total Parameters: {format_params(total_params)}")
+    print("=" * 70)
 
-    dec_linear_wrapper = SLUDecoderLinearWrapper(slu_decoder)
-    dec_linear_wrapper.to(device)
-    dec_linear_macs, dec_linear_params = profile_model(
-        dec_linear_wrapper, dec_linear_input_constructor, verbose=verbose
-    )
-    results["decoder_linear"] = {
-        "macs": dec_linear_macs,
-        "params": dec_linear_params,
-    }
 
-    # Compute totals
-    total_macs = sum(r["macs"] for r in results.values())
-    total_params = sum(r["params"] for r in results.values())
-    results["total"] = {"macs": total_macs, "params": total_params}
+def profile_decoder_seq_lengths_with_totals(
+    output_emb: nn.Module,
+    dec: nn.Module,
+    seq_lin: nn.Module,
+    encoder_dim: int,
+    enc_time: int,
+    device: str,
+) -> dict[int, tuple[int, int]]:
+    """
+    Profile decoder for different sequence lengths and return results.
+
+    Returns:
+        Dictionary mapping seq_length to (macs, params) tuple
+    """
+    print("\n" + "=" * 70)
+    print("SLU DECODER PROFILING FOR DIFFERENT SEQUENCE LENGTHS")
+    print("=" * 70)
+
+    results: dict[int, tuple[int, int]] = {}
+
+    for seq_len in DECODER_SEQ_LENGTHS:
+        decoder_wrapper = DecoderWrapper(output_emb, dec, seq_lin, encoder_dim, seq_len)
+        decoder_wrapper.to(device)
+        decoder_wrapper.eval()
+
+        # Input shape for decoder: (batch, enc_time, encoder_dim)
+        input_shape = (1, enc_time, encoder_dim)
+
+        def input_constructor(
+            shape: tuple[int, ...], dev: str = device
+        ) -> torch.Tensor:
+            return torch.randn(shape, device=dev)
+
+        macs, params = run_profiling(
+            decoder_wrapper,
+            input_shape,
+            input_constructor,
+            f"SLU Decoder (seq_length={seq_len})",
+        )
+
+        results[seq_len] = (macs, params)
+
+        print(f"\n--- Summary for seq_length={seq_len} ---")
+        print(f"  MACs: {format_macs(macs)}")
+        print(f"  FLOPs (approx 2x MACs): {format_macs(2 * macs)}")
+        print(f"  Parameters: {format_params(params)}")
+        print(f"  MACs per token: {format_macs(macs / seq_len)}")
 
     return results
 
 
-# =============================================================================
-# Latency Computation for CRDNN
-# =============================================================================
-
-
-def compute_latency_crdnn(
-    hparams: dict, device: str, num_runs: int = 100, warmup_runs: int = 10
-) -> dict:
-    """Compute inference latency for CRDNN-based SLU model.
-
-    Args:
-        hparams: The loaded hyperparameters.
-        device: Device to run profiling on.
-        num_runs: Number of profiling runs.
-        warmup_runs: Number of warmup runs.
-
-    Returns:
-        Dictionary with latency stats for each component.
+def profile_crdnn_model(hparams: dict[str, Any], device: str = "cpu") -> None:
     """
-    # Load models
-    asr_encoder = hparams["asr_model"]
-    asr_encoder.to(device)
+    Profile the CRDNN-based SLU model with separate components:
+    - CRDNN ASR Encoder
+    - SLU Encoder
+    - SLU Decoder
+    """
+    from speechbrain.inference import EncoderDecoderASR
+
+    print("=" * 70)
+    print("PROFILING CRDNN-based SLU Model")
+    print("=" * 70)
+    print(f"Input: 1 second of audio at {SAMPLE_RATE}Hz ({NUM_SAMPLES} samples)")
+    print(f"Device: {device}")
+    print("=" * 70)
+
+    # Load the pretrained ASR encoder
+    print("Loading ASR encoder from:", hparams["asr_model_path"])
+    asr_model = EncoderDecoderASR.from_hparams(
+        source=hparams["asr_model_path"],
+        savedir=hparams["asr_model_path"],
+    )
+    asr_encoder = asr_model.mods.encoder  # type: ignore[union-attr]
     asr_encoder.eval()
+    asr_encoder.to(device)
 
-    slu_encoder = hparams["slu_encoder"]
-    slu_encoder.to(device)
-    slu_encoder.eval()
+    # Get SLU model components
+    slu_enc = hparams["slu_enc"]
+    output_emb = hparams["output_emb"]
+    dec = hparams["dec"]
+    seq_lin = hparams["seq_lin"]
+    encoder_dim = hparams["encoder_dim"]
+    asr_encoder_dim = hparams["ASR_encoder_dim"]
 
-    slu_decoder = hparams["seq_decoder"]
-    slu_decoder.to(device)
-    slu_decoder.eval()
+    # Move to device
+    slu_enc.to(device)
+    output_emb.to(device)
+    dec.to(device)
+    seq_lin.to(device)
 
-    # Input dimensions
-    input_length = 16000 * 10  # 10 seconds
-    hop_length = hparams.get("hop_length", 160)
-    n_mels = hparams.get("n_mels", 80)
-    seq_length = (input_length // hop_length) + 1
-    output_tokens = 50
+    def audio_input_constructor(
+        input_shape: tuple[int, ...], dev: str = device
+    ) -> torch.Tensor:
+        return torch.randn(input_shape, device=dev)
 
-    results = {}
+    # ========== 1. Profile CRDNN ASR Encoder ==========
+    print("\n" + "=" * 70)
+    print("1. CRDNN ASR ENCODER")
+    print("=" * 70)
 
-    # Create inputs
-    mel_input = torch.randn(1, seq_length, n_mels).to(device)
+    asr_wrapper = ASREncoderWrapper(asr_encoder)
+    asr_wrapper.to(device)
+    asr_wrapper.eval()
 
-    # Initialize asr_out for later use
-    asr_out = asr_encoder(mel_input)
-
-    # Warmup and measure ASR encoder
-    with torch.no_grad():
-        for _ in range(warmup_runs):
-            asr_encoder(mel_input)
-
-        if device == "cuda":
-            torch.cuda.synchronize()
-
-        asr_times = []
-        for _ in range(num_runs):
-            start = time.perf_counter()
-            asr_out = asr_encoder(mel_input)
-            if device == "cuda":
-                torch.cuda.synchronize()
-            asr_times.append(time.perf_counter() - start)
-
-    results["asr_encoder"] = {
-        "mean_ms": sum(asr_times) / len(asr_times) * 1000,
-        "std_ms": (
-            sum((t - sum(asr_times) / len(asr_times)) ** 2 for t in asr_times)
-            / len(asr_times)
-        )
-        ** 0.5
-        * 1000,
-    }
-
-    # Measure SLU encoder
-    # Initialize slu_enc_out for later use
-    slu_enc_out, _ = slu_encoder(asr_out)
-
-    with torch.no_grad():
-        for _ in range(warmup_runs):
-            slu_encoder(asr_out)
-
-        if device == "cuda":
-            torch.cuda.synchronize()
-
-        slu_enc_times = []
-        for _ in range(num_runs):
-            start = time.perf_counter()
-            slu_enc_out, _ = slu_encoder(asr_out)
-            if device == "cuda":
-                torch.cuda.synchronize()
-            slu_enc_times.append(time.perf_counter() - start)
-
-    results["slu_encoder"] = {
-        "mean_ms": sum(slu_enc_times) / len(slu_enc_times) * 1000,
-        "std_ms": (
-            sum(
-                (t - sum(slu_enc_times) / len(slu_enc_times)) ** 2
-                for t in slu_enc_times
-            )
-            / len(slu_enc_times)
-        )
-        ** 0.5
-        * 1000,
-    }
-
-    # Measure SLU decoder
-    enc_lens = torch.ones(1).to(device)
-    tokens = torch.randint(0, 1000, (1, output_tokens)).to(device)
-
-    decoder_wrapper = SLUDecoderWrapper(slu_decoder)
-    decoder_wrapper.to(device)
-    decoder_wrapper.eval()
-
-    with torch.no_grad():
-        for _ in range(warmup_runs):
-            decoder_wrapper(slu_enc_out, enc_lens, tokens)
-
-        if device == "cuda":
-            torch.cuda.synchronize()
-
-        dec_times = []
-        for _ in range(num_runs):
-            start = time.perf_counter()
-            decoder_wrapper(slu_enc_out, enc_lens, tokens)
-            if device == "cuda":
-                torch.cuda.synchronize()
-            dec_times.append(time.perf_counter() - start)
-
-    results["slu_decoder"] = {
-        "mean_ms": sum(dec_times) / len(dec_times) * 1000,
-        "std_ms": (
-            sum((t - sum(dec_times) / len(dec_times)) ** 2 for t in dec_times)
-            / len(dec_times)
-        )
-        ** 0.5
-        * 1000,
-    }
-
-    # Total latency
-    results["total"] = {
-        "mean_ms": results["asr_encoder"]["mean_ms"]
-        + results["slu_encoder"]["mean_ms"]
-        + results["slu_decoder"]["mean_ms"],
-        "std_ms": (
-            results["asr_encoder"]["std_ms"] ** 2
-            + results["slu_encoder"]["std_ms"] ** 2
-            + results["slu_decoder"]["std_ms"] ** 2
-        )
-        ** 0.5,
-    }
-
-    return results
-
-
-# =============================================================================
-# Latency Computation for HuBERT
-# =============================================================================
-
-
-def compute_latency_hubert(
-    hparams: dict, device: str, num_runs: int = 100, warmup_runs: int = 10
-) -> dict:
-    """Compute inference latency for HuBERT-based SLU model.
-
-    The HuBERT model consists of:
-    - HuBERT encoder
-    - Attentional GRU decoder
-
-    Args:
-        hparams: The loaded hyperparameters.
-        device: Device to run profiling on.
-        num_runs: Number of profiling runs.
-        warmup_runs: Number of warmup runs.
-
-    Returns:
-        Dictionary with latency stats for each component.
-    """
-    # Load models
-    hubert = hparams["hubert"]
-    hubert.to(device)
-    hubert.eval()
-
-    slu_decoder = hparams["seq_decoder"]
-    slu_decoder.to(device)
-    slu_decoder.eval()
-
-    # Input dimensions
-    input_length = 16000 * 10  # 10 seconds
-    output_tokens = 50
-
-    results = {}
-
-    # Create inputs
-    audio_input = torch.randn(1, input_length).to(device)
-
-    # Initialize hubert_out for later use
-    hubert_out = hubert(audio_input)
-
-    # Warmup and measure HuBERT encoder
-    with torch.no_grad():
-        for _ in range(warmup_runs):
-            hubert(audio_input)
-
-        if device == "cuda":
-            torch.cuda.synchronize()
-
-        hubert_times = []
-        for _ in range(num_runs):
-            start = time.perf_counter()
-            hubert_out = hubert(audio_input)
-            if device == "cuda":
-                torch.cuda.synchronize()
-            hubert_times.append(time.perf_counter() - start)
-
-    results["hubert_encoder"] = {
-        "mean_ms": sum(hubert_times) / len(hubert_times) * 1000,
-        "std_ms": (
-            sum((t - sum(hubert_times) / len(hubert_times)) ** 2 for t in hubert_times)
-            / len(hubert_times)
-        )
-        ** 0.5
-        * 1000,
-    }
-
-    # Measure decoder
-    enc_lens = torch.ones(1).to(device)
-    tokens = torch.randint(0, 1000, (1, output_tokens)).to(device)
-
-    decoder_wrapper = SLUDecoderWrapper(slu_decoder)
-    decoder_wrapper.to(device)
-    decoder_wrapper.eval()
-
-    with torch.no_grad():
-        for _ in range(warmup_runs):
-            decoder_wrapper(hubert_out, enc_lens, tokens)
-
-        if device == "cuda":
-            torch.cuda.synchronize()
-
-        dec_times = []
-        for _ in range(num_runs):
-            start = time.perf_counter()
-            decoder_wrapper(hubert_out, enc_lens, tokens)
-            if device == "cuda":
-                torch.cuda.synchronize()
-            dec_times.append(time.perf_counter() - start)
-
-    results["decoder"] = {
-        "mean_ms": sum(dec_times) / len(dec_times) * 1000,
-        "std_ms": (
-            sum((t - sum(dec_times) / len(dec_times)) ** 2 for t in dec_times)
-            / len(dec_times)
-        )
-        ** 0.5
-        * 1000,
-    }
-
-    # Total latency
-    results["total"] = {
-        "mean_ms": results["hubert_encoder"]["mean_ms"] + results["decoder"]["mean_ms"],
-        "std_ms": (
-            results["hubert_encoder"]["std_ms"] ** 2 + results["decoder"]["std_ms"] ** 2
-        )
-        ** 0.5,
-    }
-
-    return results
-
-
-# =============================================================================
-# Result Formatting
-# =============================================================================
-
-
-def format_macs_results(results: dict, model_type: str) -> str:
-    """Format MAC computation results for display.
-
-    Args:
-        results: Dictionary of MAC results.
-        model_type: Type of model ("crdnn" or "hubert").
-
-    Returns:
-        Formatted string.
-    """
-    lines = [f"\n{'=' * 60}", f"MACs Profile for {model_type.upper()} Model", "=" * 60]
-
-    for name, data in results.items():
-        if name == "total":
-            continue
-        macs_g = data["macs"] / 1e9
-        params_m = data["params"] / 1e6
-        lines.append(f"{name:30s}: {macs_g:8.3f} GMACs, {params_m:8.3f} M params")
-
-    lines.append("-" * 60)
-    total_macs_g = results["total"]["macs"] / 1e9
-    total_params_m = results["total"]["params"] / 1e6
-    lines.append(
-        f"{'TOTAL':30s}: {total_macs_g:8.3f} GMACs, {total_params_m:8.3f} M params"
+    asr_macs, asr_params = run_profiling(
+        asr_wrapper,
+        (1, NUM_SAMPLES),
+        audio_input_constructor,
+        "CRDNN ASR Encoder",
     )
-    lines.append("=" * 60)
 
-    return "\n".join(lines)
+    print("\n--- CRDNN ASR Encoder Summary ---")
+    print(f"  MACs: {format_macs(asr_macs)}")
+    print(f"  FLOPs (approx 2x MACs): {format_macs(2 * asr_macs)}")
+    print(f"  Parameters: {format_params(asr_params)}")
 
+    # Calculate ASR encoder output time dimension
+    # CRDNN downsamples: 101 frames for 1 second at 16kHz with default settings
+    # This is approximately NUM_SAMPLES / 160
+    asr_enc_time = NUM_SAMPLES // 160  # ~100 frames
 
-def format_latency_results(results: dict, model_type: str) -> str:
-    """Format latency results for display.
+    # ========== 2. Profile SLU Encoder ==========
+    print("\n" + "=" * 70)
+    print("2. SLU ENCODER")
+    print("=" * 70)
 
-    Args:
-        results: Dictionary of latency results.
-        model_type: Type of model ("crdnn" or "hubert").
+    slu_enc_wrapper = SLUEncoderWrapper(slu_enc, asr_encoder_dim)
+    slu_enc_wrapper.to(device)
+    slu_enc_wrapper.eval()
 
-    Returns:
-        Formatted string.
-    """
-    lines = [
-        f"\n{'=' * 60}",
-        f"Latency Profile for {model_type.upper()} Model",
-        "=" * 60,
-    ]
+    # Input shape for SLU encoder: (batch, time, asr_encoder_dim)
+    slu_input_shape = (1, asr_enc_time, asr_encoder_dim)
 
-    for name, data in results.items():
-        if name == "total":
-            continue
-        lines.append(f"{name:30s}: {data['mean_ms']:8.2f} ± {data['std_ms']:.2f} ms")
+    def slu_input_constructor(
+        shape: tuple[int, ...], dev: str = device
+    ) -> torch.Tensor:
+        return torch.randn(shape, device=dev)
 
-    lines.append("-" * 60)
-    lines.append(
-        f"{'TOTAL':30s}: {results['total']['mean_ms']:8.2f} "
-        f"± {results['total']['std_ms']:.2f} ms"
+    slu_enc_macs, slu_enc_params = run_profiling(
+        slu_enc_wrapper,
+        slu_input_shape,
+        slu_input_constructor,
+        "SLU Encoder",
     )
-    lines.append("=" * 60)
 
-    return "\n".join(lines)
+    print("\n--- SLU Encoder Summary ---")
+    print(f"  MACs: {format_macs(slu_enc_macs)}")
+    print(f"  FLOPs (approx 2x MACs): {format_macs(2 * slu_enc_macs)}")
+    print(f"  Parameters: {format_params(slu_enc_params)}")
+
+    # SLU encoder output time dimension (same as input for LSTM)
+    enc_time = asr_enc_time
+
+    # ========== 3. Profile SLU Decoder for different sequence lengths ==========
+    decoder_results = profile_decoder_seq_lengths_with_totals(
+        output_emb, dec, seq_lin, encoder_dim, enc_time, device
+    )
+
+    # ========== Total Model Summary ==========
+    print("\n" + "=" * 70)
+    print("TOTAL MODEL SUMMARY")
+    print("=" * 70)
+
+    # Parameter counts
+    asr_encoder_params = sum(p.numel() for p in asr_encoder.parameters())
+    slu_encoder_params = sum(p.numel() for p in slu_enc.parameters())
+    decoder_params = (
+        sum(p.numel() for p in output_emb.parameters())
+        + sum(p.numel() for p in dec.parameters())
+        + sum(p.numel() for p in seq_lin.parameters())
+    )
+    total_params = asr_encoder_params + slu_encoder_params + decoder_params
+
+    # Encoder total (ASR + SLU)
+    total_encoder_macs = asr_macs + slu_enc_macs
+
+    print("\n--- Component Breakdown ---")
+    print("\n  CRDNN ASR Encoder:")
+    print(f"    MACs: {format_macs(asr_macs)}")
+    print(f"    FLOPs: {format_macs(2 * asr_macs)}")
+    print(f"    Parameters: {format_params(asr_encoder_params)}")
+
+    print("\n  SLU Encoder:")
+    print(f"    MACs: {format_macs(slu_enc_macs)}")
+    print(f"    FLOPs: {format_macs(2 * slu_enc_macs)}")
+    print(f"    Parameters: {format_params(slu_encoder_params)}")
+
+    print("\n  SLU Decoder (parameters same for all seq lengths):")
+    print(f"    Parameters: {format_params(decoder_params)}")
+    for seq_len, (dec_macs, _) in decoder_results.items():
+        print(
+            f"    seq_length={seq_len}: MACs={format_macs(dec_macs)}, FLOPs={format_macs(2 * dec_macs)}"
+        )
+
+    print("\n--- Totals (Encoder + Decoder) ---")
+    print(f"\n  Total Encoder MACs (ASR + SLU): {format_macs(total_encoder_macs)}")
+    print(f"  Total Encoder FLOPs (ASR + SLU): {format_macs(2 * total_encoder_macs)}")
+
+    # Show total for each decoder sequence length
+    for seq_len, (dec_macs, _) in decoder_results.items():
+        total_macs = total_encoder_macs + dec_macs
+        print(f"\n  With Decoder seq_length={seq_len}:")
+        print(f"    Total MACs: {format_macs(total_macs)}")
+        print(f"    Total FLOPs: {format_macs(2 * total_macs)}")
+
+    print(f"\n  Total Parameters: {format_params(total_params)}")
+    print("=" * 70)
 
 
-# =============================================================================
-# Main
-# =============================================================================
-
-
-def main() -> int:
-    """Main entry point."""
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compute MACs and latency for SLU models."
+        description="Profile FLOPs/MACs for SLU models using ptflops"
     )
     parser.add_argument(
         "--hparams",
-        type=str,
         required=True,
-        help="Path to the hyperparameters YAML file.",
+        type=str,
+        help="Path to hyperparameters file",
     )
     parser.add_argument(
         "--device",
         type=str,
         default="cpu",
         choices=["cpu", "cuda"],
-        help="Device to run profiling on (default: cpu).",
-    )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Print detailed per-layer statistics.",
+        help="Device to run profiling on",
     )
     parser.add_argument(
         "--compute-macs",
         action="store_true",
-        dest="compute_macs",
-        help="Compute MACs for the model.",
-    )
-    parser.add_argument(
-        "--compute-latency",
-        action="store_true",
-        dest="compute_latency",
-        help="Compute inference latency for the model.",
-    )
-    parser.add_argument(
-        "--num-runs",
-        type=int,
-        default=100,
-        dest="num_runs",
-        help="Number of runs for latency profiling (default: 100).",
-    )
-    parser.add_argument(
-        "--warmup-runs",
-        type=int,
-        default=10,
-        dest="warmup_runs",
-        help="Number of warmup runs for latency profiling (default: 10).",
+        help="Compute MACs/FLOPs for the model",
     )
 
     args = parser.parse_args()
 
     # Load hyperparameters
-    with open(args.hparams, "r") as f:
+    print(f"Loading hyperparameters from: {args.hparams}")
+    with open(args.hparams) as f:
         hparams = load_hyperpyyaml(f)
+
+    # Check if GPU is available
+    device = args.device
+    if device == "cuda" and not torch.cuda.is_available():
+        print("Warning: CUDA not available, using CPU instead")
+        device = "cpu"
 
     # Determine model type
     model_type = get_model_type(hparams)
-    print(f"Detected model type: {model_type.upper()}")
+    print(f"Detected model type: {model_type}")
 
-    # Default to computing both if neither specified
-    if not args.compute_macs and not args.compute_latency:
-        args.compute_macs = True
-        args.compute_latency = True
-
-    # Compute MACs
     if args.compute_macs:
-        print("\nComputing MACs...")
-        if model_type == "crdnn":
-            macs_results = compute_macs_crdnn(hparams, args.device, args.verbose)
-        else:
-            macs_results = compute_macs_hubert(hparams, args.device, args.verbose)
-        print(format_macs_results(macs_results, model_type))
-
-    # Compute latency
-    if args.compute_latency:
-        print("\nComputing latency...")
-        if model_type == "crdnn":
-            latency_results = compute_latency_crdnn(
-                hparams, args.device, args.num_runs, args.warmup_runs
-            )
-        else:
-            latency_results = compute_latency_hubert(
-                hparams, args.device, args.num_runs, args.warmup_runs
-            )
-        print(format_latency_results(latency_results, model_type))
-
-    return 0
+        if model_type == "hubert":
+            profile_hubert_model(hparams, device)
+        else:  # crdnn
+            profile_crdnn_model(hparams, device)
+    else:
+        print("Use --compute-macs to profile the model")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
