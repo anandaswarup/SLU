@@ -3,7 +3,7 @@ Training script for Spoken Language Understanding (SLU) models.
 
 Supports multiple SLU architectures:
 - CRDNN ASR Encoder (pre-trained on LibriSpeech) -> LSTM Encoder -> Attention GRU Decoder
-- HuBERT Encoder -> Attention GRU Decoder
+- distillHuBERT Encoder -> Attention GRU Decoder
 
 The model architecture is determined by the hyperparameters YAML file.
 
@@ -481,9 +481,8 @@ def main():
     # Prepare datasets and tokenizer
     train_set, valid_set, test_set, tokenizer = dataio_prepare(hparams)
 
-    # Load pretrained tokenizer
-    hparams["pretrainer"].collect_files()
-    hparams["pretrainer"].load_collected()
+    # Load pretrained tokenizer directly from local file
+    hparams["tokenizer"].load(hparams["tokenizer_file"])
 
     # Determine model type and set up accordingly
     model_type = get_model_type(hparams)
