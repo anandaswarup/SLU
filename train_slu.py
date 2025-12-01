@@ -9,7 +9,7 @@ The model architecture is determined by the hyperparameters YAML file.
 
 Usage:
     python train_slu.py --hparams hparams/crdnn_librispeech_encoder_seq2seq_slu.yaml
-    python train_slu.py --hparams hparams/hubert_encoder_gru_decoder_slu.yaml
+    python train_slu.py --hparams hparams/distillHuBERT_encoder_gru_decoder_slu.yaml
 """
 
 import argparse
