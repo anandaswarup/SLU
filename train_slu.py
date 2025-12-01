@@ -9,7 +9,7 @@ The model architecture is determined by the hyperparameters YAML file.
 
 Usage:
     python train_slu.py --hparams hparams/crdnn_librispeech_encoder_seq2seq_slu.yaml
-    python train_slu.py --hparams hparams/distillHuBERT_encoder_gru_decoder_slu.yaml
+    python train_slu.py --hparams hparams/distillHubert_encoder_gru_decoder_slu.yaml
 """
 
 import argparse
@@ -481,8 +481,9 @@ def main():
     # Prepare datasets and tokenizer
     train_set, valid_set, test_set, tokenizer = dataio_prepare(hparams)
 
-    # Load pretrained tokenizer directly from local file
-    hparams["tokenizer"].load(hparams["tokenizer_file"])
+    # Load pretrained tokenizer
+    hparams["pretrainer"].collect_files()
+    hparams["pretrainer"].load_collected()
 
     # Determine model type and set up accordingly
     model_type = get_model_type(hparams)
