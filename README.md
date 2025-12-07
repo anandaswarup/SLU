@@ -37,8 +37,29 @@ uv sync
 
 Your dataset should be in JSONL format with the following structure:
 ```json
-{"audio_filepath": "path/to/audio.wav", "duration": 2.5, "semantics": {"scenario": "...", "action": "...", "entities": [...]}, "transcript": "optional transcription"}
+{
+  "audio_filepath": "path/to/audio.wav",
+  "duration": 2.5,
+  "semantics": {
+    "scenario": "music",
+    "action": "play",
+    "entities": [
+      {"type": "artist", "filler": "Taylor Swift"},
+      {"type": "genre", "filler": "pop"}
+    ]
+  },
+  "transcript": "play some Taylor Swift pop music"
+}
 ```
+
+**Fields:**
+- `audio_filepath` (required): Path to the audio file
+- `duration` (optional): Audio duration in seconds
+- `semantics` (required): Dictionary containing:
+  - `scenario`: The intent category (e.g., "music", "weather", "alarm")
+  - `action`: The action to perform (e.g., "play", "query", "set")
+  - `entities`: A list of entity dictionaries, each with `type` and `filler` keys
+- `transcript` (optional): Text transcription of the audio
 
 Organize your data files as:
 ```
