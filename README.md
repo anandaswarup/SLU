@@ -160,6 +160,27 @@ python inference_slu.py \
 
 **Output:** The script outputs the predicted semantic string containing scenario, action, and entities.
 
+## Profiling
+
+Profile model complexity (FLOPs/MACs and parameters) using a 1-second audio sample:
+
+```bash
+python compute_macs.py \
+    --hparams hparams/distillHuBERT_encoder_gru_decoder_slu.yaml \
+    --device cpu \
+    --compute-macs
+```
+
+**Arguments:**
+- `--hparams`: Path to the hyperparameters YAML file
+- `--device`: Device to use (`cpu` or `cuda`)
+- `--compute-macs`: Flag to compute MACs/FLOPs
+
+**Output:** The script outputs detailed profiling information including:
+- MACs (Multiply-Accumulate Operations) for each model component
+- Number of parameters per component
+- Total model complexity
+
 ## Project Structure
 
 ```
