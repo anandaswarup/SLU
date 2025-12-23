@@ -1,0 +1,14 @@
+[project]
+name = "slu"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "jsonlines>=4.0.0",
+    "pandas>=2.3.3",
+    "speechbrain",
+]
+
+[tool.uv.sources]
+speechbrain = { git = "https://github.com/speechbrain/speechbrain.git" }
